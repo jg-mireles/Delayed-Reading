@@ -2,7 +2,7 @@
    MODULE 4: js/notation.js
    Parses MusicXML into structured per-measure data (actual beat lengths,
    meters, ensemble audio notes, and cello visual notes) and renders crisp
-   single-bar SVGs via VexFlow.
+   single-bar OR continuous multi-bar SVGs via VexFlow.
    ========================================================================== */
 
 const VEXFLOW_CDN = "https://cdn.jsdelivr.net/npm/vexflow@4.2.3/build/cjs/vexflow.js";
@@ -27,11 +27,6 @@ function loadVexFlow() {
   });
 }
 
-/**
- * Converts a duration measured in quarter-notes into a VexFlow duration string
- * (e.g., 4 -> "w", 3 -> "hd", 2 -> "h", 1.5 -> "qd", 1 -> "q", 0.5 -> "8").
- * Falls back to MusicXML <type> if needed.
- */
 function quarterDurationToVex(quarterBeats, typeText, dots = 0, isRest = false) {
   const candidates = [
     { q: 6.0, code: "wd" },
@@ -79,10 +74,6 @@ function xmlClefToVexClef(sign, line) {
   return "bass";
 }
 
-/**
- * Parses a MusicXML string into an array of measure objects ready for
- * clock.js, audio.js, and renderMeasureToContainer().
- */
 export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
   const doc = new DOMParser().parseFromString(xmlString, "application/xml");
   const parseError = doc.querySelector("parsererror");
@@ -103,7 +94,7 @@ export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
     numberLabel: String(i + 1),
     isImplicit: false,
     meter: { beats: 4, beatType: 4 },
-    actualQuarterBeats: 4, // True musical length of this bar in quarter notes (detects pickups/split bars)
+    actualQuarterBeats: 4,
     keySignature: "C",
     clef: "bass",
     audioNotes: [],
@@ -157,7 +148,6 @@ export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
         measures[mIdx].clef = currentClef;
       }
 
-      // Find the primary voice number used in this measure (usually "1")
       const firstVoice = mEl.querySelector("note > voice")?.textContent?.trim() || "1";
 
       let cursorDivisions = 0;
@@ -256,34 +246,10 @@ export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
   return measures;
 }
 
-/**
- * Renders a single measure object cleanly into a DOM container using VexFlow.
- */
-export async function renderMeasureToContainer(measure, containerEl, options = {}) {
-  const VF = await loadVexFlow();
-  const { showTimeSignature = false, width = 560, height = 170 } = options;
-
-  containerEl.innerHTML = "";
-
-  const renderer = new VF.Renderer(containerEl, VF.Renderer.Backends.SVG);
-  renderer.resize(width, height);
-  const context = renderer.getContext();
-
-  const stave = new VF.Stave(15, 25, width - 30);
-  stave.addClef(measure.clef);
-  if (measure.keySignature && measure.keySignature !== "C") {
-    stave.addKeySignature(measure.keySignature);
-  }
-  if (showTimeSignature) {
-    stave.addTimeSignature(`${measure.meter.beats}/${measure.meter.beatType}`);
-  }
-  stave.setContext(context).draw();
-
-  if (!measure.visualNotes || measure.visualNotes.length === 0) {
-    return;
-  }
-
+function buildStaveNotes(VF, measure) {
   const staveNotes = [];
+  if (!measure.visualNotes) return staveNotes;
+
   measure.visualNotes.forEach(n => {
     if (n.isChord && staveNotes.length > 0) {
       const prev = staveNotes[staveNotes.length - 1];
@@ -303,19 +269,11 @@ export async function renderMeasureToContainer(measure, containerEl, options = {
       staveNotes.push(sn);
     }
   });
-
-  const beams = VF.Beam.generateBeams(staveNotes);
-  const voice = new VF.Voice({
-    num_beats: measure.meter.beats,
-    beat_value: measure.meter.beatType
-  }).setStrict(false);
-
-  voice.addTickables(staveNotes);
-
-  new VF.Formatter()
-    .joinVoices([voice])
-    .format([voice], width - 140);
-
-  voice.draw(context, stave);
-  beams.forEach(b => b.setContext(context).draw());
+  return staveNotes;
 }
+
+/**
+ * Renders a single measure object cleanly into a DOM container using VexFlow.
+ */
+export async function renderMeasureToContainer(measure, containerEl, options = {}) {
+  const VF = await loadV
