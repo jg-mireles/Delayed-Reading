@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stage 4 Test — Cello Sheet Music Slicer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎻</text></svg>">
+  <link rel="stylesheet" href="css/style.css" />
+  <style>
+    .bars-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      gap: 1rem;
+      width: 100%;
+      max-width: 1120px;
+    }
+    .bar-card {
+      background: #ffffff;
+      border-radius: 10px;
+      padding: 0.75rem 1rem 0.25rem;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .bar-label {
+      align-self: flex-start;
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: #64748b;
+      margin-bottom: 0.25rem;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Stage 4: Cello Notation & Bar Slicer Test</h2>
+
+  <div class="controls">
+    <label>Select Chorale:
+      <select id="chorale-select" disabled>
+        <option>Loading catalog...</option>
+      </select>
+    </label>
+    <button id="render-btn" disabled>Render Bars</button>
+    <button id="random-btn" disabled>Pick Random</button>
+  </div>
+
+  <div class="status" id="status-text">Fetching Bach chorale list...</div>
+
+  <div class="bars-grid" id="bars-grid"></div>
+
+  <script type="module">
+    import { fetchBachChoraleList, fetchAndInspectScore } from "./js/repo-loader.js";
+    import { parseMusicXMLScore, renderMeasureToContainer } from "./js/notation.js";
+
+    const selectEl = document.getElementById("chorale-select");
+    const renderBtn = document.getElementById("render-btn");
+    const randomBtn = document.getElementById("random-btn");
+    const statusText = document.getElementById("status-text");
+    const barsGrid = document.getElementById("bars-grid");
+
+    let catalogItems = [];
+
+    async function init() {
+      const { items } = await fetchBachChoraleList();
+      catalogItems = items;
+
+      selectEl.innerHTML = "";
+      items.forEach((item, idx) => {
+        const opt = document.createElement("option");
+        opt.value = idx;
+        opt.textContent = item.title;
+        selectEl.appendChild(opt);
+      });
+
+      selectEl.disabled = false;
+      renderBtn.disabled = false;
+      randomBtn.disabled = false;
+
+      await renderSelected();
+    }
+
+    async function renderSelected() {
+      const idx = parseInt(selectEl.value, 10) || 0;
+      const item = catalogItems[idx];
+      if (!item) return;
+
+      renderBtn.disabled = true;
+      randomBtn.disabled = true;
+      statusText.textContent = `Loading & slicing ${item.name}...`;
+      barsGrid.innerHTML = "";
+
+      try {
+        const { xmlString, summary } = await fetchAndInspectScore(item.url);
+        const measures = parseMusicXMLScore(xmlString);
+
+        for (let i = 0; i < measures.length; i++) {
+          const m = measures[i];
+          const prevMeter = i > 0 ? measures[i - 1].meter : null;
+          const meterChanged =
+            i === 0 ||
+            prevMeter.beats !== m.meter.beats ||
+            prevMeter.beatType !== m.meter.beatType;
+
+          const card = document.createElement("div");
+          card.className = "bar-card";
+
+          const label = document.createElement("div");
+          label.className = "bar-label";
+          label.textContent = `Bar ${i + 1} (${m.meter.beats}/${m.meter.beatType} • Key: ${m.keySignature})`;
+          card.appendChild(label);
+
+          const svgHost = document.createElement("div");
+          card.appendChild(svgHost);
+          barsGrid.appendChild(card);
+
+          await renderMeasureToContainer(m, svgHost, {
+            showTimeSignature: meterChanged,
+            width: 350,
+            height: 155
+          });
+        }
+
+        statusText.textContent = `[PASS] Rendered ${measures.length} Cello/Bass bars for "${summary.workTitle}"`;
+      } catch (err) {
+        statusText.textContent = `[FAIL] ${err.message}`;
+        console.error(err);
+      } finally {
+        renderBtn.disabled = false;
+        randomBtn.disabled = false;
+      }
+    }
+
+    renderBtn.addEventListener("click", renderSelected);
+    randomBtn.addEventListener("click", () => {
+      if (!catalogItems.length) return;
+      selectEl.selectedIndex = Math.floor(Math.random() * catalogItems.length);
+      renderSelected();
+    });
+
+    init();
+  </script>
+</body>
+</html>
