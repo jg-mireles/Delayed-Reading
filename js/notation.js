@@ -1,404 +1,135 @@
-/* ==========================================================================
-   MODULE 4: js/notation.js
-   Parses MusicXML into structured per-measure data (actual beat lengths,
-   meters, ensemble audio notes, and cello visual notes) and renders crisp
-   single-bar OR continuous multi-bar SVGs via VexFlow.
-   ========================================================================== */
-
-const VEXFLOW_CDN = "https://cdn.jsdelivr.net/npm/vexflow@4.2.3/build/cjs/vexflow.js";
-
-const FIFTHS_TO_MAJOR_KEY = {
-  "-7": "Cb", "-6": "Gb", "-5": "Db", "-4": "Ab", "-3": "Eb", "-2": "Bb", "-1": "F",
-  "0": "C",
-  "1": "G", "2": "D", "3": "A", "4": "E", "5": "B", "6": "F#", "7": "C#"
-};
-
-function loadVexFlow() {
-  if (window.Vex && window.Vex.Flow) return Promise.resolve(window.Vex.Flow);
-  return new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = VEXFLOW_CDN;
-    script.onload = () => {
-      if (window.Vex && window.Vex.Flow) resolve(window.Vex.Flow);
-      else reject(new Error("VexFlow loaded, but window.Vex.Flow was not found."));
-    };
-    script.onerror = () => reject(new Error("Failed to load VexFlow from CDN."));
-    document.head.appendChild(script);
-  });
-}
-
-function quarterDurationToVex(quarterBeats, typeText, dots = 0, isRest = false) {
-  const candidates = [
-    { q: 6.0, code: "wd" },
-    { q: 4.0, code: "w" },
-    { q: 3.0, code: "hd" },
-    { q: 2.0, code: "h" },
-    { q: 1.5, code: "qd" },
-    { q: 1.0, code: "q" },
-    { q: 0.75, code: "8d" },
-    { q: 0.5, code: "8" },
-    { q: 0.375, code: "16d" },
-    { q: 0.25, code: "16" },
-    { q: 0.125, code: "32" }
-  ];
-
-  let code = null;
-  for (const c of candidates) {
-    if (Math.abs(quarterBeats - c.q) < 0.03) {
-      code = c.code;
-      break;
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cello 1-Bar-Ahead Sight Reader</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎻</text></svg>">
+  <link rel="stylesheet" href="css/style.css" />
+  <style>
+    .piece-banner {
+      width: 100%;
+      max-width: 960px;
+      background: #ffffff;
+      border-radius: 10px;
+      padding: 0.85rem 1.25rem;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+      margin-bottom: 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.5rem;
     }
-  }
-
-  if (!code) {
-    const typeMap = {
-      whole: "w",
-      half: "h",
-      quarter: "q",
-      eighth: "8",
-      "16th": "16",
-      "32nd": "32"
-    };
-    code = typeMap[typeText] || "q";
-    if (dots > 0) code += "d".repeat(dots);
-  }
-
-  return isRest ? `${code}r` : code;
-}
-
-function xmlClefToVexClef(sign, line) {
-  if (sign === "F") return "bass";
-  if (sign === "C" && line === "4") return "tenor";
-  if (sign === "C" && line === "3") return "alto";
-  if (sign === "G") return "treble";
-  return "bass";
-}
-
-export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
-  const doc = new DOMParser().parseFromString(xmlString, "application/xml");
-  const parseError = doc.querySelector("parsererror");
-  if (parseError) {
-    throw new Error("Invalid MusicXML: " + parseError.textContent.slice(0, 100));
-  }
-
-  const parts = Array.from(doc.querySelectorAll("score-partwise > part"));
-  if (parts.length === 0) {
-    throw new Error("No <part> elements found in MusicXML.");
-  }
-
-  const celloIdx = targetPartIndex !== null ? targetPartIndex : parts.length - 1;
-  const totalMeasures = parts[celloIdx].querySelectorAll("measure").length;
-
-  const measures = Array.from({ length: totalMeasures }, (_, i) => ({
-    index: i,
-    numberLabel: String(i + 1),
-    isImplicit: false,
-    meter: { beats: 4, beatType: 4 },
-    actualQuarterBeats: 4,
-    keySignature: "C",
-    clef: "bass",
-    audioNotes: [],
-    visualNotes: []
-  }));
-
-  parts.forEach((partEl, pIdx) => {
-    const isCello = pIdx === celloIdx;
-    let divisions = 1;
-    let currentBeats = 4;
-    let currentBeatType = 4;
-    let currentKey = "C";
-    let currentClef = isCello ? "bass" : "treble";
-
-    const partMeasures = Array.from(partEl.querySelectorAll("measure"));
-
-    partMeasures.forEach((mEl, mIdx) => {
-      if (mIdx >= totalMeasures) return;
-
-      const attrEl = mEl.querySelector("attributes");
-      if (attrEl) {
-        const divText = attrEl.querySelector("divisions")?.textContent;
-        if (divText) divisions = parseInt(divText, 10) || divisions;
-
-        const fifthsText = attrEl.querySelector("key > fifths")?.textContent;
-        if (fifthsText !== undefined) {
-          currentKey = FIFTHS_TO_MAJOR_KEY[fifthsText.trim()] || "C";
-        }
-
-        const beatsText = attrEl.querySelector("time > beats")?.textContent;
-        const beatTypeText = attrEl.querySelector("time > beat-type")?.textContent;
-        if (beatsText && beatTypeText) {
-          currentBeats = parseInt(beatsText, 10);
-          currentBeatType = parseInt(beatTypeText, 10);
-        }
-
-        const clefSign = attrEl.querySelector("clef > sign")?.textContent;
-        const clefLine = attrEl.querySelector("clef > line")?.textContent;
-        if (clefSign) {
-          currentClef = xmlClefToVexClef(clefSign.trim(), clefLine?.trim());
-        }
-      }
-
-      const nominalQuarterBeats = currentBeats * (4 / currentBeatType);
-
-      if (isCello) {
-        measures[mIdx].numberLabel = mEl.getAttribute("number") || String(mIdx + 1);
-        measures[mIdx].isImplicit = mEl.getAttribute("implicit") === "yes";
-        measures[mIdx].meter = { beats: currentBeats, beatType: currentBeatType };
-        measures[mIdx].keySignature = currentKey;
-        measures[mIdx].clef = currentClef;
-      }
-
-      const firstVoice = mEl.querySelector("note > voice")?.textContent?.trim() || "1";
-
-      let cursorDivisions = 0;
-      let maxDivisionsReached = 0;
-      const quarterUnit = 4 / currentBeatType;
-
-      Array.from(mEl.children).forEach(child => {
-        if (child.tagName === "backup") {
-          const dur = parseInt(child.querySelector("duration")?.textContent || "0", 10);
-          cursorDivisions = Math.max(0, cursorDivisions - dur);
-          return;
-        }
-        if (child.tagName === "forward") {
-          const dur = parseInt(child.querySelector("duration")?.textContent || "0", 10);
-          cursorDivisions += dur;
-          if (cursorDivisions > maxDivisionsReached) maxDivisionsReached = cursorDivisions;
-          return;
-        }
-        if (child.tagName !== "note") return;
-
-        const noteVoice = child.querySelector("voice")?.textContent?.trim() || firstVoice;
-        const isPrimaryVoice = noteVoice === firstVoice;
-
-        const isChord = child.querySelector("chord") !== null;
-        const restEl = child.querySelector("rest");
-        const isRest = restEl !== null;
-        const isFullMeasureRest = restEl?.getAttribute("measure") === "yes";
-
-        const rawDur = child.querySelector("duration")?.textContent;
-        const durDivs = rawDur !== undefined
-          ? parseInt(rawDur, 10)
-          : (isFullMeasureRest ? Math.round(nominalQuarterBeats * divisions) : divisions);
-
-        const quarterBeats = isFullMeasureRest
-          ? nominalQuarterBeats
-          : (durDivs / divisions);
-
-        const typeText = child.querySelector("type")?.textContent?.trim() || "";
-        const dots = child.querySelectorAll("dot").length;
-
-        const beatOffset = (cursorDivisions / divisions) / quarterUnit;
-        const durationBeats = quarterBeats / quarterUnit;
-
-        if (!isRest) {
-          const step = child.querySelector("pitch > step")?.textContent?.trim() || "C";
-          const alter = parseInt(child.querySelector("pitch > alter")?.textContent || "0", 10);
-          const octave = child.querySelector("pitch > octave")?.textContent?.trim() || "3";
-          const acc = alter === 1 ? "#" : alter === -1 ? "b" : "";
-          const pitchStr = `${step}${acc}${octave}`;
-
-          const ties = Array.from(child.querySelectorAll("tie")).map(t => t.getAttribute("type"));
-          const isTiedStop = ties.includes("stop") && !ties.includes("start");
-
-          if (!isTiedStop) {
-            measures[mIdx].audioNotes.push({
-              pitch: pitchStr,
-              beatOffset,
-              durationBeats,
-              isCello
-            });
-          }
-
-          if (isCello && isPrimaryVoice) {
-            measures[mIdx].visualNotes.push({
-              vexKey: `${step.toLowerCase()}${acc}/${octave}`,
-              vexDuration: quarterDurationToVex(quarterBeats, typeText, dots, false),
-              accidental: acc || null,
-              isChord,
-              isRest: false
-            });
-          }
-        } else if (isCello && isPrimaryVoice) {
-          const restKey = currentClef === "bass" ? "d/3" : currentClef === "tenor" ? "a/3" : "b/4";
-          measures[mIdx].visualNotes.push({
-            vexKey: restKey,
-            vexDuration: quarterDurationToVex(quarterBeats, typeText, dots, true),
-            accidental: null,
-            isChord: false,
-            isRest: true
-          });
-        }
-
-        if (!isChord) {
-          cursorDivisions += durDivs;
-          if (cursorDivisions > maxDivisionsReached) maxDivisionsReached = cursorDivisions;
-        }
-      });
-
-      if (isCello) {
-        const measuredQuarters = maxDivisionsReached / divisions;
-        measures[mIdx].actualQuarterBeats = measuredQuarters > 0 ? measuredQuarters : nominalQuarterBeats;
-      }
-    });
-  });
-
-  return measures;
-}
-
-function buildStaveNotes(VF, measure) {
-  const staveNotes = [];
-  if (!measure.visualNotes) return staveNotes;
-
-  measure.visualNotes.forEach(n => {
-    if (n.isChord && staveNotes.length > 0) {
-      const prev = staveNotes[staveNotes.length - 1];
-      prev.keys.push(n.vexKey);
-      if (n.accidental) {
-        prev.addModifier(new VF.Accidental(n.accidental), prev.keys.length - 1);
-      }
-    } else {
-      const sn = new VF.StaveNote({
-        clef: measure.clef,
-        keys: [n.vexKey],
-        duration: n.vexDuration
-      });
-      if (n.accidental && !n.isRest) {
-        sn.addModifier(new VF.Accidental(n.accidental), 0);
-      }
-      staveNotes.push(sn);
+    .piece-title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #1e293b;
+      margin: 0;
     }
-  });
-  return staveNotes;
-}
-
-export async function renderMeasureToContainer(measure, containerEl, options = {}) {
-  const VF = await loadVexFlow();
-  const { showTimeSignature = false, width = 560, height = 170 } = options;
-
-  containerEl.innerHTML = "";
-
-  const renderer = new VF.Renderer(containerEl, VF.Renderer.Backends.SVG);
-  renderer.resize(width, height);
-  const context = renderer.getContext();
-
-  const stave = new VF.Stave(15, 25, width - 30);
-  stave.addClef(measure.clef);
-  if (measure.keySignature && measure.keySignature !== "C") {
-    stave.addKeySignature(measure.keySignature);
-  }
-  if (showTimeSignature) {
-    stave.addTimeSignature(`${measure.meter.beats}/${measure.meter.beatType}`);
-  }
-  stave.setContext(context).draw();
-
-  const staveNotes = buildStaveNotes(VF, measure);
-  if (staveNotes.length === 0) return;
-
-  const beams = VF.Beam.generateBeams(staveNotes);
-  const voice = new VF.Voice({
-    num_beats: measure.meter.beats,
-    beat_value: measure.meter.beatType
-  }).setStrict(false);
-
-  voice.addTickables(staveNotes);
-
-  new VF.Formatter()
-    .joinVoices([voice])
-    .format([voice], width - 140);
-
-  voice.draw(context, stave);
-  beams.forEach(b => b.setContext(context).draw());
-}
-
-export async function renderContinuousMeasures(measuresSlice, containerEl, options = {}) {
-  const VF = await loadVexFlow();
-  const {
-    showFirstTimeSignature = false,
-    highlightFirstBar = false,
-    width = 860,
-    height = 185
-  } = options;
-
-  containerEl.innerHTML = "";
-  if (!measuresSlice || measuresSlice.length === 0) return;
-
-  const renderer = new VF.Renderer(containerEl, VF.Renderer.Backends.SVG);
-  renderer.resize(width, height);
-  const context = renderer.getContext();
-
-  const leftPad = 15;
-  const usableWidth = width - 30;
-  const bar1Width = measuresSlice.length === 2 ? Math.round(usableWidth * 0.54) : usableWidth;
-  const bar2Width = usableWidth - bar1Width;
-
-  if (highlightFirstBar) {
-    context.save();
-    context.setFillStyle("rgba(43, 89, 195, 0.08)");
-    context.fillRect(leftPad, 22, bar1Width, 125);
-    context.restore();
-  }
-
-  const m1 = measuresSlice[0];
-  const stave1 = new VF.Stave(leftPad, 28, bar1Width);
-  stave1.addClef(m1.clef);
-  if (m1.keySignature && m1.keySignature !== "C") {
-    stave1.addKeySignature(m1.keySignature);
-  }
-  if (showFirstTimeSignature) {
-    stave1.addTimeSignature(`${m1.meter.beats}/${m1.meter.beatType}`);
-  }
-  stave1.setContext(context).draw();
-
-  const notes1 = buildStaveNotes(VF, m1);
-  if (notes1.length > 0) {
-    const beams1 = VF.Beam.generateBeams(notes1);
-    const voice1 = new VF.Voice({
-      num_beats: m1.meter.beats,
-      beat_value: m1.meter.beatType
-    }).setStrict(false);
-    voice1.addTickables(notes1);
-
-    const headerReserve = 95 + (m1.keySignature !== "C" ? 30 : 0) + (showFirstTimeSignature ? 25 : 0);
-    new VF.Formatter()
-      .joinVoices([voice1])
-      .format([voice1], Math.max(120, bar1Width - headerReserve));
-
-    voice1.draw(context, stave1);
-    beams1.forEach(b => b.setContext(context).draw());
-  }
-
-  if (measuresSlice.length === 2) {
-    const m2 = measuresSlice[1];
-    const stave2 = new VF.Stave(leftPad + bar1Width, 28, bar2Width);
-
-    const meterChanged =
-      m2.meter.beats !== m1.meter.beats ||
-      m2.meter.beatType !== m1.meter.beatType;
-    const keyChanged = m2.keySignature !== m1.keySignature;
-    const clefChanged = m2.clef !== m1.clef;
-
-    if (clefChanged) stave2.addClef(m2.clef);
-    if (keyChanged && m2.keySignature !== "C") stave2.addKeySignature(m2.keySignature);
-    if (meterChanged) stave2.addTimeSignature(`${m2.meter.beats}/${m2.meter.beatType}`);
-
-    stave2.setContext(context).draw();
-
-    const notes2 = buildStaveNotes(VF, m2);
-    if (notes2.length > 0) {
-      const beams2 = VF.Beam.generateBeams(notes2);
-      const voice2 = new VF.Voice({
-        num_beats: m2.meter.beats,
-        beat_value: m2.meter.beatType
-      }).setStrict(false);
-      voice2.addTickables(notes2);
-
-      new VF.Formatter()
-        .joinVoices([voice2])
-        .format([voice2], Math.max(120, bar2Width - 45));
-
-      voice2.draw(context, stave2);
-      beams2.forEach(b => b.setContext(context).draw());
+    .piece-meta {
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: #64748b;
     }
-  }
-}
+    #chorale-select {
+      max-width: 280px;
+    }
+    #notation-card {
+      max-width: 960px;
+      padding: 1.5rem;
+    }
+    .notation-row {
+      display: flex;
+      gap: 1.25rem;
+      justify-content: center;
+      align-items: stretch;
+      flex-wrap: wrap;
+      width: 100%;
+    }
+    .bar-slot {
+      flex: 1 1 380px;
+      max-width: 560px;
+      border: 2px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 0.65rem 0.75rem 0.25rem;
+      background: #ffffff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      transition: border-color 0.15s, background-color 0.15s;
+    }
+    .bar-slot.playing-now {
+      border-color: #2b59c3;
+      background: #f8faff;
+    }
+    .bar-slot.look-ahead {
+      border-color: #cbd5e1;
+      background: #ffffff;
+    }
+    .slot-badge {
+      align-self: flex-start;
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      padding: 0.2rem 0.55rem;
+      border-radius: 5px;
+      margin-bottom: 0.25rem;
+    }
+    .playing-now .slot-badge {
+      background: #dbeafe;
+      color: #1e40af;
+    }
+    .look-ahead .slot-badge {
+      background: #f1f5f9;
+      color: #475569;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Cello 1-Bar-Ahead Sight Reader</h2>
+
+  <div class="controls">
+    <label>Chorale:
+      <select id="chorale-select" disabled>
+        <option>Loading Bach chorales...</option>
+      </select>
+    </label>
+    <button id="random-btn" disabled>Random</button>
+    <label>View:
+      <select id="bar-mode">
+        <option value="2" selected>2 Bars (Easier)</option>
+        <option value="1">1 Bar (Hard)</option>
+      </select>
+    </label>
+    <label>BPM:
+      <input type="number" id="bpm" value="72" min="40" max="180" />
+    </label>
+    <label>
+      <input type="checkbox" id="click-track" checked /> Clicks
+    </label>
+    <label>
+      <input type="checkbox" id="mute-cello" checked /> Mute Cello
+    </label>
+    <button id="start-btn" disabled>Start</button>
+    <button id="stop-btn" class="stop" disabled>Stop</button>
+  </div>
+
+  <div class="piece-banner">
+    <h3 class="piece-title" id="piece-title">Loading score...</h3>
+    <div class="piece-meta" id="piece-meta">—</div>
+  </div>
+
+  <div class="status" id="status-text">Initializing modules...</div>
+
+  <div class="beat-bar" id="beat-bar"></div>
+
+  <div id="notation-card">
+    <div id="notation-output" class="notation-row">Loading Cello notation...</div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
