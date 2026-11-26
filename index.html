@@ -16,7 +16,7 @@
       <input type="number" id="bpm" value="72" min="40" max="180" />
     </label>
     <label>Test Meter:
-      <select id="test-meter" style="padding: 0.35rem 0.5rem; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 1rem;">
+      <select id="test-meter">
         <option value="4/4" selected>4/4 (4 beats)</option>
         <option value="3/4">3/4 (3 beats)</option>
         <option value="2/4">2/4 (2 beats)</option>
@@ -25,34 +25,80 @@
         <option value="mixed">Mixed (4/4 → 3/4 → 6/8)</option>
       </select>
     </label>
-    <label>Test Bars:
-      <input type="number" id="test-bars" value="6" min="2" max="64" />
+    <label>
+      <input type="checkbox" id="click-track" checked /> Metronome Clicks
+    </label>
+    <label>
+      <input type="checkbox" id="mute-cello" checked /> Mute Cello Voice
     </label>
     <button id="start-btn">Start</button>
     <button id="stop-btn" class="stop" disabled>Stop</button>
   </div>
 
-  <div class="status" id="status-text">Stage 1 Ready — Pick any time signature and press Start.</div>
+  <div class="status" id="status-text">Stage 2 Ready — Press Start to test audio + 1-bar-ahead clock.</div>
 
   <div class="beat-bar" id="beat-bar"></div>
 
   <div id="notation-card">
     <div class="placeholder-bar" id="display-bar">Bar 1 (Ready to Read)</div>
-    <div class="placeholder-sub" id="display-sub">Beat dots and bar duration automatically adapt to each measure's meter.</div>
+    <div class="placeholder-sub" id="display-sub">Hardcoded 4-bar chorale cadence ready to test audio sync.</div>
   </div>
 
   <script type="module">
     import { SightReadClock } from "./js/clock.js";
+    import { SightReadAudio } from "./js/audio.js";
 
     const startBtn = document.getElementById("start-btn");
     const stopBtn = document.getElementById("stop-btn");
     const bpmInput = document.getElementById("bpm");
     const meterSelect = document.getElementById("test-meter");
-    const barsInput = document.getElementById("test-bars");
+    const clickCheckbox = document.getElementById("click-track");
+    const muteCelloCheckbox = document.getElementById("mute-cello");
     const statusText = document.getElementById("status-text");
     const beatBar = document.getElementById("beat-bar");
     const displayBar = document.getElementById("display-bar");
     const displaySub = document.getElementById("display-sub");
+
+    const audio = new SightReadAudio();
+
+    // Hardcoded 4-bar test progression (SATB voices) to verify Stage 2 audio sync
+    const TEST_SCORE_BARS = [
+      // Bar 1: C major
+      [
+        { pitch: "E4", beatOffset: 0, durationBeats: 2, isCello: false },
+        { pitch: "G4", beatOffset: 0, durationBeats: 2, isCello: false },
+        { pitch: "C3", beatOffset: 0, durationBeats: 1, isCello: true },
+        { pitch: "E3", beatOffset: 1, durationBeats: 1, isCello: true },
+        { pitch: "F4", beatOffset: 2, durationBeats: 2, isCello: false },
+        { pitch: "A4", beatOffset: 2, durationBeats: 2, isCello: false },
+        { pitch: "F3", beatOffset: 2, durationBeats: 2, isCello: true }
+      ],
+      // Bar 2: G7
+      [
+        { pitch: "D4", beatOffset: 0, durationBeats: 2, isCello: false },
+        { pitch: "G4", beatOffset: 0, durationBeats: 2, isCello: false },
+        { pitch: "B2", beatOffset: 0, durationBeats: 1, isCello: true },
+        { pitch: "G2", beatOffset: 1, durationBeats: 1, isCello: true },
+        { pitch: "F4", beatOffset: 2, durationBeats: 2, isCello: false },
+        { pitch: "B4", beatOffset: 2, durationBeats: 2, isCello: false },
+        { pitch: "D3", beatOffset: 2, durationBeats: 2, isCello: true }
+      ],
+      // Bar 3: A minor -> F
+      [
+        { pitch: "E4", beatOffset: 0, durationBeats: 2, isCello: false },
+        { pitch: "C5", beatOffset: 0, durationBeats: 2, isCello: false },
+        { pitch: "A2", beatOffset: 0, durationBeats: 2, isCello: true },
+        { pitch: "F4", beatOffset: 2, durationBeats: 2, isCello: false },
+        { pitch: "A4", beatOffset: 2, durationBeats: 2, isCello: false },
+        { pitch: "F2", beatOffset: 2, durationBeats: 2, isCello: true }
+      ],
+      // Bar 4: C major resolution
+      [
+        { pitch: "E4", beatOffset: 0, durationBeats: 2, isCello: false },
+        { pitch: "G4", beatOffset: 0, durationBeats: 2, isCello: false },
+        { pitch: "C3", beatOffset: 0, durationBeats: 2, isCello: true }
+      ]
+    ];
 
     function renderBeatDots(count, activeBeat = -1) {
       beatBar.innerHTML = "";
@@ -85,26 +131,41 @@
 
     const clock = new SightReadClock({
       onMeasureStart(playIndex, readIndex, meterInfo) {
-        const totalBars = parseInt(barsInput.value, 10) || 6;
+        const totalBars = TEST_SCORE_BARS.length;
         const meterLabel = `${meterInfo.beats}/${meterInfo.beatType}`;
+        const bpm = parseInt(bpmInput.value, 10) || 72;
+        const beatDurationSec = 60 / bpm;
 
         if (playIndex === -1) {
           statusText.textContent = `COUNT-IN [${meterLabel}] — Read Bar 1 now!`;
           displayBar.textContent = "Reading: Bar 1";
-          displaySub.textContent = `Count-in: ${meterInfo.feltBeats} beats (${meterLabel})`;
-        } else if (readIndex < totalBars) {
-          statusText.textContent = `Playing Bar ${playIndex + 1} [${meterLabel}] | Reading Bar ${readIndex + 1}`;
-          displayBar.textContent = `Reading: Bar ${readIndex + 1}`;
-          displaySub.textContent = `Audio playing Bar ${playIndex + 1} (${meterInfo.feltBeats} felt beats in ${meterLabel})`;
+          displaySub.textContent = "Count-in clicks playing...";
         } else {
-          statusText.textContent = `Playing Final Bar (${playIndex + 1}) [${meterLabel}] | End of Piece`;
-          displayBar.textContent = "End of Piece";
-          displaySub.textContent = `Audio finishing Bar ${playIndex + 1}`;
+          // Schedule accompaniment audio for Bar N (playIndex)
+          audio.scheduleBar(
+            TEST_SCORE_BARS[playIndex],
+            beatDurationSec,
+            muteCelloCheckbox.checked
+          );
+
+          if (readIndex < totalBars) {
+            statusText.textContent = `Playing Bar ${playIndex + 1} [${meterLabel}] | Reading Bar ${readIndex + 1}`;
+            displayBar.textContent = `Reading: Bar ${readIndex + 1}`;
+            displaySub.textContent = `Audio playing Bar ${playIndex + 1} accompaniment`;
+          } else {
+            statusText.textContent = `Playing Final Bar (${playIndex + 1}) [${meterLabel}] | End of Piece`;
+            displayBar.textContent = "End of Piece";
+            displaySub.textContent = `Audio finishing Bar ${playIndex + 1}`;
+          }
         }
       },
 
       onBeat(beatInBar, playIndex, readIndex, meterInfo) {
         renderBeatDots(meterInfo.feltBeats, beatInBar);
+        // Always click during count-in (playIndex === -1), or if Metronome Clicks is checked
+        if (playIndex === -1 || clickCheckbox.checked) {
+          audio.playClick(beatInBar === 0);
+        }
       },
 
       onFinish() {
@@ -113,14 +174,14 @@
         renderBeatDots(4, -1);
         statusText.textContent = "Finished! Press Start to run again.";
         displayBar.textContent = "Bar 1 (Ready to Read)";
-        displaySub.textContent = "Stage 1 multi-meter clock completed cleanly.";
+        displaySub.textContent = "Stage 2 audio + clock test completed cleanly.";
       }
     });
 
     startBtn.addEventListener("click", () => {
+      audio.unlock(); // Unlock Web Audio synchronously inside click gesture
       const bpm = parseInt(bpmInput.value, 10) || 72;
-      const totalBars = parseInt(barsInput.value, 10) || 6;
-      const measureMeters = buildTestMeters(meterSelect.value, totalBars);
+      const measureMeters = buildTestMeters(meterSelect.value, TEST_SCORE_BARS.length);
 
       startBtn.disabled = true;
       stopBtn.disabled = false;
@@ -129,12 +190,13 @@
 
     stopBtn.addEventListener("click", () => {
       clock.stop();
+      audio.stopAll();
       startBtn.disabled = false;
       stopBtn.disabled = true;
       renderBeatDots(4, -1);
       statusText.textContent = "Stopped.";
       displayBar.textContent = "Bar 1 (Ready to Read)";
-      displaySub.textContent = "Clock reset.";
+      displaySub.textContent = "Clock and audio reset.";
     });
   </script>
 </body>
