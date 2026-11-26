@@ -2,7 +2,7 @@
    MODULE 3: js/repo-loader.js
    Fetches the Bach Chorales catalog from GitHub (music21 corpus), downloads
    selected .mxl / .xml scores, unzips .mxl archives in-browser, and extracts
-   the BWV catalog number + German chorale title.
+   the BWV catalog number + German chorale title (with MacRoman encoding fix).
    ========================================================================== */
 
 const BACH_CORPUS_API =
@@ -12,10 +12,6 @@ const BACH_CORPUS_RAW_BASE =
 
 const JSZIP_CDN = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
 
-/**
- * Common BWV -> German Title lookup so dropdown entries show German titles
- * immediately even before downloading individual .mxl archives.
- */
 const BWV_GERMAN_TITLES = {
   "bwv1.6": "Wie schön leuchtet der Morgenstern",
   "bwv2.6": "Ach Gott, vom Himmel sieh darein",
@@ -220,6 +216,22 @@ const BWV_GERMAN_TITLES = {
   "bwv248.64-6": "Nun seid ihr wohl gerochen"
 };
 
+/**
+ * Repairs legacy MacRoman -> Windows-1252 mojibake found in older music21
+ * MusicXML headers (e.g., byte 0x9A decoded as 'š' instead of 'ö', 0x8A as 'Š' instead of 'ä').
+ */
+function fixGermanMojibake(str) {
+  return str
+    .replace(/š/g, "ö")
+    .replace(/Š/g, "ä")
+    .replace(/Ÿ/g, "ü")
+    .replace(/…/g, "Ö")
+    .replace(/€/g, "Ä")
+    .replace(/†/g, "Ü")
+    .replace(/§/g, "ß")
+    .replace(/Ž/g, "é");
+}
+
 function formatCatalogEntry(filename) {
   const stem = filename.replace(/\.(mxl|xml)$/i, "").toLowerCase();
   const bwvLabel = stem.replace(/^bwv/i, "BWV ");
@@ -243,9 +255,6 @@ function loadJSZip() {
   });
 }
 
-/**
- * Fetches the list of available Bach chorale files (.mxl / .xml) from GitHub.
- */
 export async function fetchBachChoraleList() {
   try {
     const res = await fetch(BACH_CORPUS_API);
@@ -307,10 +316,6 @@ export async function extractXmlFromMxl(arrayBuffer) {
   return await zip.file(rootXmlPath).async("text");
 }
 
-/**
- * Extracts the real German chorale title from MusicXML tags, ignoring
- * filename-only placeholders like "bwv1.6.mxl".
- */
 function extractGermanTitleFromXml(doc, fallbackTitle = "") {
   const isFilenameOnly = str => /^bwv[\d.\-]+(\.(mxl|xml))?$/i.test(str.trim());
 
@@ -322,8 +327,10 @@ function extractGermanTitleFromXml(doc, fallbackTitle = "") {
 
   for (const raw of candidates) {
     if (!raw) continue;
-    const cleaned = raw.trim().replace(/\s+/g, " ");
-    // Skip empty strings, pure BWV numbers, composer names, or copyright lines
+    // Repair legacy MacRoman encoding and strip any leading "BWV 1.6 " prefix
+    let cleaned = fixGermanMojibake(raw.trim().replace(/\s+/g, " "));
+    cleaned = cleaned.replace(/^bwv\s*[\d.\-]+\s*[:\-—]?\s*/i, "").trim();
+
     if (
       cleaned.length > 2 &&
       !isFilenameOnly(cleaned) &&
