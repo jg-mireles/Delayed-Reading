@@ -1,0 +1,131 @@
+/* ==========================================================================
+   Stage 1: Layout, Controls & Beat Metronome Styling
+   ========================================================================== */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f4f5f7;
+  color: #1e1e24;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2rem 1rem;
+  margin: 0;
+}
+
+h2 {
+  margin-top: 0;
+  margin-bottom: 1.25rem;
+}
+
+.controls {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  background: #ffffff;
+  padding: 1rem 1.5rem;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+
+label {
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+input[type="number"] {
+  width: 65px;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 1rem;
+}
+
+button {
+  background: #2b59c3;
+  color: #ffffff;
+  border: none;
+  padding: 0.55rem 1.25rem;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+button:hover:not(:disabled) {
+  background: #1e429f;
+}
+
+button:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
+button.stop {
+  background: #dc2626;
+}
+
+button.stop:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
+.status {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  color: #1e293b;
+}
+
+.beat-bar {
+  display: flex;
+  gap: 0.85rem;
+  margin-bottom: 1.5rem;
+}
+
+.beat-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #cbd5e1;
+  transition: transform 0.08s, background 0.08s;
+}
+
+.beat-dot.active {
+  background: #2b59c3;
+  transform: scale(1.15);
+}
+
+#notation-card {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  padding: 2rem;
+  min-height: 200px;
+  width: 100%;
+  max-width: 720px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+.placeholder-bar {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: #2b59c3;
+}
+
+.placeholder-sub {
+  margin-top: 0.5rem;
+  font-size: 0.95rem;
+  color: #64748b;
+}
