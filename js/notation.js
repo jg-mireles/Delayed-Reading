@@ -1,7 +1,8 @@
 /* ==========================================================================
    MODULE 4: js/notation.js
-   Parses MusicXML into structured per-measure data (meters, ensemble audio
-   notes, and cello visual notes) and renders crisp single-bar SVGs via VexFlow.
+   Parses MusicXML into structured per-measure data (actual beat lengths,
+   meters, ensemble audio notes, and cello visual notes) and renders crisp
+   single-bar SVGs via VexFlow.
    ========================================================================== */
 
 const VEXFLOW_CDN = "https://cdn.jsdelivr.net/npm/vexflow@4.2.3/build/cjs/vexflow.js";
@@ -26,19 +27,48 @@ function loadVexFlow() {
   });
 }
 
-function xmlTypeToVexDuration(typeText, dots = 0, isRest = false) {
-  const map = {
-    whole: "w",
-    half: "h",
-    quarter: "q",
-    eighth: "8",
-    "16th": "16",
-    "32nd": "32"
-  };
-  let dur = map[typeText] || "q";
-  if (dots > 0) dur += "d".repeat(dots);
-  if (isRest) dur += "r";
-  return dur;
+/**
+ * Converts a duration measured in quarter-notes into a VexFlow duration string
+ * (e.g., 4 -> "w", 3 -> "hd", 2 -> "h", 1.5 -> "qd", 1 -> "q", 0.5 -> "8").
+ * Falls back to MusicXML <type> if needed.
+ */
+function quarterDurationToVex(quarterBeats, typeText, dots = 0, isRest = false) {
+  const candidates = [
+    { q: 6.0, code: "wd" },
+    { q: 4.0, code: "w" },
+    { q: 3.0, code: "hd" },
+    { q: 2.0, code: "h" },
+    { q: 1.5, code: "qd" },
+    { q: 1.0, code: "q" },
+    { q: 0.75, code: "8d" },
+    { q: 0.5, code: "8" },
+    { q: 0.375, code: "16d" },
+    { q: 0.25, code: "16" },
+    { q: 0.125, code: "32" }
+  ];
+
+  let code = null;
+  for (const c of candidates) {
+    if (Math.abs(quarterBeats - c.q) < 0.03) {
+      code = c.code;
+      break;
+    }
+  }
+
+  if (!code) {
+    const typeMap = {
+      whole: "w",
+      half: "h",
+      quarter: "q",
+      eighth: "8",
+      "16th": "16",
+      "32nd": "32"
+    };
+    code = typeMap[typeText] || "q";
+    if (dots > 0) code += "d".repeat(dots);
+  }
+
+  return isRest ? `${code}r` : code;
 }
 
 function xmlClefToVexClef(sign, line) {
@@ -51,10 +81,7 @@ function xmlClefToVexClef(sign, line) {
 
 /**
  * Parses a MusicXML string into an array of measure objects ready for
- * clock.js, audio.js, and renderBarToElement().
- *
- * @param {string} xmlString
- * @param {number|null} targetPartIndex - 0-based part index to display (defaults to bottom part = Cello/Bass)
+ * clock.js, audio.js, and renderMeasureToContainer().
  */
 export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
   const doc = new DOMParser().parseFromString(xmlString, "application/xml");
@@ -68,20 +95,21 @@ export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
     throw new Error("No <part> elements found in MusicXML.");
   }
 
-  // Default to the bottom voice (Bass in SATB chorales, Violoncello in string quartets)
   const celloIdx = targetPartIndex !== null ? targetPartIndex : parts.length - 1;
   const totalMeasures = parts[celloIdx].querySelectorAll("measure").length;
 
   const measures = Array.from({ length: totalMeasures }, (_, i) => ({
     index: i,
+    numberLabel: String(i + 1),
+    isImplicit: false,
     meter: { beats: 4, beatType: 4 },
+    actualQuarterBeats: 4, // True musical length of this bar in quarter notes (detects pickups/split bars)
     keySignature: "C",
     clef: "bass",
-    audioNotes: [],  // All voices (for audio.js)
-    visualNotes: []  // Cello voice only (for VexFlow rendering)
+    audioNotes: [],
+    visualNotes: []
   }));
 
-  // Track persistent state across measures per part
   parts.forEach((partEl, pIdx) => {
     const isCello = pIdx === celloIdx;
     let divisions = 1;
@@ -95,7 +123,6 @@ export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
     partMeasures.forEach((mEl, mIdx) => {
       if (mIdx >= totalMeasures) return;
 
-      // 1. Check for attribute updates (divisions, key, time, clef)
       const attrEl = mEl.querySelector("attributes");
       if (attrEl) {
         const divText = attrEl.querySelector("divisions")?.textContent;
@@ -120,15 +147,22 @@ export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
         }
       }
 
+      const nominalQuarterBeats = currentBeats * (4 / currentBeatType);
+
       if (isCello) {
+        measures[mIdx].numberLabel = mEl.getAttribute("number") || String(mIdx + 1);
+        measures[mIdx].isImplicit = mEl.getAttribute("implicit") === "yes";
         measures[mIdx].meter = { beats: currentBeats, beatType: currentBeatType };
         measures[mIdx].keySignature = currentKey;
         measures[mIdx].clef = currentClef;
       }
 
-      // 2. Walk through notes/backups/forwards in chronological order
+      // Find the primary voice number used in this measure (usually "1")
+      const firstVoice = mEl.querySelector("note > voice")?.textContent?.trim() || "1";
+
       let cursorDivisions = 0;
-      const quarterUnit = 4 / currentBeatType; // converts quarter-note offsets to felt-beat offsets
+      let maxDivisionsReached = 0;
+      const quarterUnit = 4 / currentBeatType;
 
       Array.from(mEl.children).forEach(child => {
         if (child.tagName === "backup") {
@@ -139,19 +173,33 @@ export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
         if (child.tagName === "forward") {
           const dur = parseInt(child.querySelector("duration")?.textContent || "0", 10);
           cursorDivisions += dur;
+          if (cursorDivisions > maxDivisionsReached) maxDivisionsReached = cursorDivisions;
           return;
         }
         if (child.tagName !== "note") return;
 
-        // Handle mid-bar clef changes if present before a note
+        const noteVoice = child.querySelector("voice")?.textContent?.trim() || firstVoice;
+        const isPrimaryVoice = noteVoice === firstVoice;
+
         const isChord = child.querySelector("chord") !== null;
-        const isRest = child.querySelector("rest") !== null;
-        const durDivs = parseInt(child.querySelector("duration")?.textContent || String(divisions), 10);
-        const typeText = child.querySelector("type")?.textContent?.trim() || "quarter";
+        const restEl = child.querySelector("rest");
+        const isRest = restEl !== null;
+        const isFullMeasureRest = restEl?.getAttribute("measure") === "yes";
+
+        const rawDur = child.querySelector("duration")?.textContent;
+        const durDivs = rawDur !== undefined
+          ? parseInt(rawDur, 10)
+          : (isFullMeasureRest ? Math.round(nominalQuarterBeats * divisions) : divisions);
+
+        const quarterBeats = isFullMeasureRest
+          ? nominalQuarterBeats
+          : (durDivs / divisions);
+
+        const typeText = child.querySelector("type")?.textContent?.trim() || "";
         const dots = child.querySelectorAll("dot").length;
 
         const beatOffset = (cursorDivisions / divisions) / quarterUnit;
-        const durationBeats = (durDivs / divisions) / quarterUnit;
+        const durationBeats = quarterBeats / quarterUnit;
 
         if (!isRest) {
           const step = child.querySelector("pitch > step")?.textContent?.trim() || "C";
@@ -160,7 +208,6 @@ export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
           const acc = alter === 1 ? "#" : alter === -1 ? "b" : "";
           const pitchStr = `${step}${acc}${octave}`;
 
-          // Check if tied to previous note (skip re-attacking tied continuations in audio)
           const ties = Array.from(child.querySelectorAll("tie")).map(t => t.getAttribute("type"));
           const isTiedStop = ties.includes("stop") && !ties.includes("start");
 
@@ -173,21 +220,20 @@ export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
             });
           }
 
-          if (isCello) {
+          if (isCello && isPrimaryVoice) {
             measures[mIdx].visualNotes.push({
               vexKey: `${step.toLowerCase()}${acc}/${octave}`,
-              vexDuration: xmlTypeToVexDuration(typeText, dots, false),
+              vexDuration: quarterDurationToVex(quarterBeats, typeText, dots, false),
               accidental: acc || null,
               isChord,
               isRest: false
             });
           }
-        } else if (isCello) {
-          // Position rest comfortably on middle line of active clef
+        } else if (isCello && isPrimaryVoice) {
           const restKey = currentClef === "bass" ? "d/3" : currentClef === "tenor" ? "a/3" : "b/4";
           measures[mIdx].visualNotes.push({
             vexKey: restKey,
-            vexDuration: xmlTypeToVexDuration(typeText, dots, true),
+            vexDuration: quarterDurationToVex(quarterBeats, typeText, dots, true),
             accidental: null,
             isChord: false,
             isRest: true
@@ -196,8 +242,14 @@ export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
 
         if (!isChord) {
           cursorDivisions += durDivs;
+          if (cursorDivisions > maxDivisionsReached) maxDivisionsReached = cursorDivisions;
         }
       });
+
+      if (isCello) {
+        const measuredQuarters = maxDivisionsReached / divisions;
+        measures[mIdx].actualQuarterBeats = measuredQuarters > 0 ? measuredQuarters : nominalQuarterBeats;
+      }
     });
   });
 
@@ -206,7 +258,6 @@ export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
 
 /**
  * Renders a single measure object cleanly into a DOM container using VexFlow.
- * Automatically draws the active clef, key signature, and time signature (on Bar 1 or meter changes).
  */
 export async function renderMeasureToContainer(measure, containerEl, options = {}) {
   const VF = await loadVexFlow();
@@ -232,7 +283,6 @@ export async function renderMeasureToContainer(measure, containerEl, options = {
     return;
   }
 
-  // Build VexFlow StaveNotes (grouping chord tones if any)
   const staveNotes = [];
   measure.visualNotes.forEach(n => {
     if (n.isChord && staveNotes.length > 0) {
@@ -254,7 +304,6 @@ export async function renderMeasureToContainer(measure, containerEl, options = {
     }
   });
 
-  // Auto-generate beams for eighth/sixteenth notes and render softly (non-strict voice for pickup bars)
   const beams = VF.Beam.generateBeams(staveNotes);
   const voice = new VF.Voice({
     num_beats: measure.meter.beats,
