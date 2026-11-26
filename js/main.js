@@ -1,9 +1,7 @@
 /* ==========================================================================
    MODULE 5: js/main.js
    Connects clock.js, audio.js, repo-loader.js, and notation.js into the
-   1-bar-ahead Cello Sight-Reading Trainer.
-   - Ensures opening pickup bars get a full-measure count-in and full-bar
-     reading window (aligning pickup notes to the end of the bar).
+   1-Bar / 2-Bar Look-Ahead Cello Sight-Reading Trainer.
    ========================================================================== */
 
 import { SightReadClock } from "./clock.js";
@@ -13,6 +11,7 @@ import { parseMusicXMLScore, renderMeasureToContainer } from "./notation.js";
 
 const choraleSelect = document.getElementById("chorale-select");
 const randomBtn = document.getElementById("random-btn");
+const barModeSelect = document.getElementById("bar-mode");
 const bpmInput = document.getElementById("bpm");
 const clickCheckbox = document.getElementById("click-track");
 const muteCelloCheckbox = document.getElementById("mute-cello");
@@ -30,6 +29,10 @@ let catalogItems = [];
 let loadedMeasures = [];
 let loadedSummary = null;
 
+function getBarMode() {
+  return parseInt(barModeSelect.value, 10) || 2;
+}
+
 function renderBeatDots(count, activeBeat = -1) {
   beatBar.innerHTML = "";
   for (let i = 0; i < count; i++) {
@@ -41,9 +44,8 @@ function renderBeatDots(count, activeBeat = -1) {
 
 /**
  * Builds per-measure meter objects for SightReadClock.
- * If the opening bar (index 0) is a short pickup bar, expands it to a full
- * measure (e.g., 4 beats in 4/4) so both the count-in and pickup bar give
- * you a full measure to read ahead.
+ * Expands an opening pickup bar to a full measure so both count-in and
+ * pickup bar give a full, predictable reading window.
  */
 function buildClockMeters(measures) {
   return measures.map((m, idx) => {
@@ -68,9 +70,8 @@ function buildClockMeters(measures) {
 }
 
 /**
- * If Bar 0 is a pickup bar (e.g., 1 beat in a 4/4 bar), shifts its notes to
- * the end of the full bar (beatOffset + 3) so clicks 1-2-3 lead cleanly into
- * the pickup note on beat 4 and Bar 2 lands right on Beat 1.
+ * Shifts opening pickup notes to the end of the full bar so clicks 1..N-1
+ * lead cleanly into the pickup and Bar 2 lands right on Beat 1.
  */
 function getAdjustedAudioNotes(measure, barIndex) {
   if (barIndex !== 0) return measure.audioNotes;
@@ -87,24 +88,89 @@ function getAdjustedAudioNotes(measure, barIndex) {
   }));
 }
 
-async function displayBar(barIndex) {
-  if (barIndex < 0 || barIndex >= loadedMeasures.length) {
-    notationContainer.innerHTML = `<div class="placeholder-bar">End of Piece</div><div class="placeholder-sub">Press Start to practice again or select another chorale.</div>`;
+/**
+ * Renders either 1 bar (Bar N+1) or 2 bars (Bar N + Bar N+1) depending on mode.
+ * @param {number} playIndex - Index of measure currently playing (-1 during count-in)
+ */
+async function renderViewport(playIndex) {
+  if (!loadedMeasures.length) return;
+
+  const mode = getBarMode();
+  notationContainer.innerHTML = "";
+
+  // Determine which bar indices to show
+  const slots = [];
+  if (mode === 1) {
+    const readIdx = playIndex + 1;
+    if (readIdx < loadedMeasures.length) {
+      slots.push({
+        barIndex: readIdx,
+        role: "look-ahead",
+        badge: `Read Ahead • Bar ${loadedMeasures[readIdx].numberLabel}`
+      });
+    }
+  } else {
+    // 2-Bar Mode:
+    // During count-in (playIndex === -1), show Bar 1 & Bar 2 as Look-Ahead.
+    // During playIndex >= 0, show Bar N (Playing Now) + Bar N+1 (Look Ahead).
+    const firstIdx = playIndex === -1 ? 0 : playIndex;
+    const secondIdx = firstIdx + 1;
+
+    if (firstIdx < loadedMeasures.length) {
+      slots.push({
+        barIndex: firstIdx,
+        role: playIndex === -1 ? "look-ahead" : "playing-now",
+        badge: playIndex === -1
+          ? `Up Next • Bar ${loadedMeasures[firstIdx].numberLabel}`
+          : `Playing Now • Bar ${loadedMeasures[firstIdx].numberLabel}`
+      });
+    }
+    if (secondIdx < loadedMeasures.length) {
+      slots.push({
+        barIndex: secondIdx,
+        role: "look-ahead",
+        badge: `Read Ahead • Bar ${loadedMeasures[secondIdx].numberLabel}`
+      });
+    }
+  }
+
+  if (slots.length === 0) {
+    notationContainer.innerHTML = `
+      <div style="text-align:center; padding: 1.5rem;">
+        <div class="placeholder-bar">End of Piece</div>
+        <div class="placeholder-sub">Press Start to practice again or select another chorale.</div>
+      </div>`;
     return;
   }
 
-  const m = loadedMeasures[barIndex];
-  const prevMeter = barIndex > 0 ? loadedMeasures[barIndex - 1].meter : null;
-  const meterChanged =
-    barIndex === 0 ||
-    prevMeter.beats !== m.meter.beats ||
-    prevMeter.beatType !== m.meter.beatType;
+  const svgWidth = slots.length === 2 ? 430 : 620;
 
-  await renderMeasureToContainer(m, notationContainer, {
-    showTimeSignature: meterChanged,
-    width: 640,
-    height: 185
-  });
+  for (const slot of slots) {
+    const m = loadedMeasures[slot.barIndex];
+    const prevMeter = slot.barIndex > 0 ? loadedMeasures[slot.barIndex - 1].meter : null;
+    const meterChanged =
+      slot.barIndex === 0 ||
+      prevMeter.beats !== m.meter.beats ||
+      prevMeter.beatType !== m.meter.beatType;
+
+    const card = document.createElement("div");
+    card.className = `bar-slot ${slot.role}`;
+
+    const badge = document.createElement("div");
+    badge.className = "slot-badge";
+    badge.textContent = slot.badge;
+    card.appendChild(badge);
+
+    const svgHost = document.createElement("div");
+    card.appendChild(svgHost);
+    notationContainer.appendChild(card);
+
+    await renderMeasureToContainer(m, svgHost, {
+      showTimeSignature: meterChanged,
+      width: svgWidth,
+      height: 175
+    });
+  }
 }
 
 const clock = new SightReadClock({
@@ -112,14 +178,18 @@ const clock = new SightReadClock({
     const totalBars = loadedMeasures.length;
     const bpm = parseInt(bpmInput.value, 10) || 72;
     const beatDurationSec = 60 / bpm;
+    const mode = getBarMode();
 
-    // 1. Display Bar N+1 (readIndex) on screen for look-ahead reading
-    displayBar(readIndex);
+    // 1. Update sheet music viewport
+    renderViewport(playIndex);
 
     // 2. Schedule audio for Bar N (playIndex)
     if (playIndex === -1) {
       const m1 = loadedMeasures[0];
-      statusText.textContent = `COUNT-IN (${meterInfo.feltBeats} beats) — Read Bar ${m1.numberLabel} now!`;
+      const m2 = loadedMeasures[1];
+      statusText.textContent = mode === 2 && m2
+        ? `COUNT-IN (${meterInfo.feltBeats} beats) — Previewing Bars ${m1.numberLabel} & ${m2.numberLabel}`
+        : `COUNT-IN (${meterInfo.feltBeats} beats) — Read Bar ${m1.numberLabel} now!`;
     } else if (playIndex < totalBars) {
       const playingMeasure = loadedMeasures[playIndex];
       const notesToPlay = getAdjustedAudioNotes(playingMeasure, playIndex);
@@ -132,7 +202,7 @@ const clock = new SightReadClock({
 
       if (readIndex < totalBars) {
         const readingMeasure = loadedMeasures[readIndex];
-        statusText.textContent = `Playing Bar ${playingMeasure.numberLabel} | Reading Bar ${readingMeasure.numberLabel}`;
+        statusText.textContent = `Playing Bar ${playingMeasure.numberLabel} | Ahead: Bar ${readingMeasure.numberLabel}`;
       } else {
         statusText.textContent = `Playing Final Bar (${playingMeasure.numberLabel}) | End of Piece`;
       }
@@ -153,7 +223,7 @@ const clock = new SightReadClock({
     randomBtn.disabled = false;
     renderBeatDots(loadedMeasures[0]?.meter.beats || 4, -1);
     statusText.textContent = `Finished "${loadedSummary?.workTitle || "Chorale"}"! Press Start to repeat.`;
-    displayBar(0);
+    renderViewport(-1);
   }
 });
 
@@ -178,7 +248,7 @@ async function loadSelectedChorale() {
     choraleSelect.options[idx].textContent = summary.workTitle;
 
     renderBeatDots(loadedMeasures[0]?.meter.beats || 4, -1);
-    await displayBar(0);
+    await renderViewport(-1);
 
     statusText.textContent = `Ready — Press Start for full ${loadedMeasures[0]?.meter.beats || 4}-beat count-in.`;
     startBtn.disabled = false;
@@ -216,11 +286,16 @@ function stopPractice() {
   renderBeatDots(loadedMeasures[0]?.meter.beats || 4, -1);
   if (loadedMeasures.length > 0) {
     statusText.textContent = "Stopped. Ready to restart.";
-    displayBar(0);
+    renderViewport(-1);
   }
 }
 
 choraleSelect.addEventListener("change", loadSelectedChorale);
+barModeSelect.addEventListener("change", () => {
+  if (!clock.isRunning && loadedMeasures.length > 0) {
+    renderViewport(-1);
+  }
+});
 randomBtn.addEventListener("click", () => {
   if (!catalogItems.length) return;
   choraleSelect.selectedIndex = Math.floor(Math.random() * catalogItems.length);
