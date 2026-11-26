@@ -1,13 +1,20 @@
 /* ==========================================================================
    MODULE 5: js/main.js
    Connects clock.js, audio.js, repo-loader.js, and notation.js into the
-   1-Bar / 2-Bar Look-Ahead Cello Sight-Reading Trainer.
+   Cello Sight-Reading Trainer with 3 reading modes:
+   - "continuous": 2 measures on one continuous staff (normal sheet music feel)
+   - "split": 2 separate cards side-by-side (trains eye jump)
+   - "single": 1 bar ahead only (strict memory buffer)
    ========================================================================== */
 
 import { SightReadClock } from "./clock.js";
 import { SightReadAudio } from "./audio.js";
 import { fetchBachChoraleList, fetchAndInspectScore } from "./repo-loader.js";
-import { parseMusicXMLScore, renderMeasureToContainer } from "./notation.js";
+import {
+  parseMusicXMLScore,
+  renderMeasureToContainer,
+  renderContinuousMeasures
+} from "./notation.js";
 
 const choraleSelect = document.getElementById("chorale-select");
 const randomBtn = document.getElementById("random-btn");
@@ -29,8 +36,8 @@ let catalogItems = [];
 let loadedMeasures = [];
 let loadedSummary = null;
 
-function getBarMode() {
-  return parseInt(barModeSelect.value, 10) || 2;
+function getViewMode() {
+  return barModeSelect.value || "continuous";
 }
 
 function renderBeatDots(count, activeBeat = -1) {
@@ -82,48 +89,86 @@ function getAdjustedAudioNotes(measure, barIndex) {
 async function renderViewport(playIndex) {
   if (!loadedMeasures.length) return;
 
-  const mode = getBarMode();
+  const mode = getViewMode();
   notationContainer.innerHTML = "";
 
-  const slots = [];
-  if (mode === 1) {
-    const readIdx = playIndex + 1;
-    if (readIdx < loadedMeasures.length) {
-      slots.push({
-        barIndex: readIdx,
-        role: "look-ahead",
-        badge: `Read Ahead • Bar ${loadedMeasures[readIdx].numberLabel}`
-      });
-    }
-  } else {
-    const firstIdx = playIndex === -1 ? 0 : playIndex;
-    const secondIdx = firstIdx + 1;
-
-    if (firstIdx < loadedMeasures.length) {
-      slots.push({
-        barIndex: firstIdx,
-        role: playIndex === -1 ? "look-ahead" : "playing-now",
-        badge: playIndex === -1
-          ? `Up Next • Bar ${loadedMeasures[firstIdx].numberLabel}`
-          : `Playing Now • Bar ${loadedMeasures[firstIdx].numberLabel}`
-      });
-    }
-    if (secondIdx < loadedMeasures.length) {
-      slots.push({
-        barIndex: secondIdx,
-        role: "look-ahead",
-        badge: `Read Ahead • Bar ${loadedMeasures[secondIdx].numberLabel}`
-      });
-    }
-  }
-
-  if (slots.length === 0) {
+  const startBarIdx = mode === "single" ? playIndex + 1 : (playIndex === -1 ? 0 : playIndex);
+  if (startBarIdx >= loadedMeasures.length) {
     notationContainer.innerHTML = `
       <div style="text-align:center; padding: 1.5rem;">
         <div class="placeholder-bar">End of Piece</div>
         <div class="placeholder-sub">Press Start to practice again or select another chorale.</div>
       </div>`;
     return;
+  }
+
+  // --- MODE A: Continuous Staff (2 bars connected by a normal barline) ---
+  if (mode === "continuous") {
+    const slice = loadedMeasures.slice(startBarIdx, startBarIdx + 2);
+    const prevMeter = startBarIdx > 0 ? loadedMeasures[startBarIdx - 1].meter : null;
+    const showFirstTS =
+      startBarIdx === 0 ||
+      prevMeter.beats !== slice[0].meter.beats ||
+      prevMeter.beatType !== slice[0].meter.beatType;
+
+    const box = document.createElement("div");
+    box.className = "continuous-box";
+
+    const header = document.createElement("div");
+    header.className = "continuous-header";
+
+    const leftBadge = document.createElement("span");
+    leftBadge.className = `slot-badge ${playIndex === -1 ? "badge-next" : "badge-active"}`;
+    leftBadge.textContent = playIndex === -1
+      ? `Up Next • Bar ${slice[0].numberLabel}`
+      : `Playing Now • Bar ${slice[0].numberLabel}`;
+    header.appendChild(leftBadge);
+
+    if (slice[1]) {
+      const rightBadge = document.createElement("span");
+      rightBadge.className = "slot-badge badge-next";
+      rightBadge.textContent = `Read Ahead • Bar ${slice[1].numberLabel}`;
+      header.appendChild(rightBadge);
+    }
+
+    box.appendChild(header);
+
+    const svgHost = document.createElement("div");
+    box.appendChild(svgHost);
+    notationContainer.appendChild(box);
+
+    await renderContinuousMeasures(slice, svgHost, {
+      showFirstTimeSignature: showFirstTS,
+      highlightFirstBar: playIndex >= 0,
+      width: 850,
+      height: 185
+    });
+    return;
+  }
+
+  // --- MODE B & C: Split Cards (2 cards) or Single Card (1 bar hard) ---
+  const slots = [];
+  if (mode === "single") {
+    slots.push({
+      barIndex: startBarIdx,
+      role: "look-ahead",
+      badge: `Read Ahead • Bar ${loadedMeasures[startBarIdx].numberLabel}`
+    });
+  } else {
+    slots.push({
+      barIndex: startBarIdx,
+      role: playIndex === -1 ? "look-ahead" : "playing-now",
+      badge: playIndex === -1
+        ? `Up Next • Bar ${loadedMeasures[startBarIdx].numberLabel}`
+        : `Playing Now • Bar ${loadedMeasures[startBarIdx].numberLabel}`
+    });
+    if (startBarIdx + 1 < loadedMeasures.length) {
+      slots.push({
+        barIndex: startBarIdx + 1,
+        role: "look-ahead",
+        badge: `Read Ahead • Bar ${loadedMeasures[startBarIdx + 1].numberLabel}`
+      });
+    }
   }
 
   const svgWidth = slots.length === 2 ? 430 : 620;
@@ -161,14 +206,14 @@ const clock = new SightReadClock({
     const totalBars = loadedMeasures.length;
     const bpm = parseInt(bpmInput.value, 10) || 72;
     const beatDurationSec = 60 / bpm;
-    const mode = getBarMode();
+    const mode = getViewMode();
 
     renderViewport(playIndex);
 
     if (playIndex === -1) {
       const m1 = loadedMeasures[0];
       const m2 = loadedMeasures[1];
-      statusText.textContent = mode === 2 && m2
+      statusText.textContent = mode !== "single" && m2
         ? `COUNT-IN (${meterInfo.feltBeats} beats) — Previewing Bars ${m1.numberLabel} & ${m2.numberLabel}`
         : `COUNT-IN (${meterInfo.feltBeats} beats) — Read Bar ${m1.numberLabel} now!`;
     } else if (playIndex < totalBars) {
