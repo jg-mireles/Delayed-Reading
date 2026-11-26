@@ -128,17 +128,11 @@
         const { xmlString, summary } = await fetchAndInspectScore(item.url);
         const measures = parseMusicXMLScore(xmlString);
 
-        // Format full display title (e.g., "BWV 1.6 — Wie schön leuchtet der Morgenstern")
-        const bwvCode = item.name.replace(/\.(mxl|xml)$/i, "").toUpperCase();
-        const fullTitle = summary.workTitle && summary.workTitle !== "Untitled Chorale"
-          ? `${bwvCode} — ${summary.workTitle}`
-          : bwvCode;
-
-        // Update header banner and enrich dropdown option text
-        choraleTitleEl.textContent = fullTitle;
+        // Display "BWV 1.6 — Wie schön leuchtet der Morgenstern"
+        choraleTitleEl.textContent = summary.workTitle;
         choraleMetaEl.textContent = `Key: ${measures[0]?.keySignature || "C"} • ${measures.length} bars • ${summary.meters.join(", ")}`;
         choraleHeader.style.display = "flex";
-        selectEl.options[idx].textContent = fullTitle;
+        selectEl.options[idx].textContent = summary.workTitle;
 
         for (let i = 0; i < measures.length; i++) {
           const m = measures[i];
@@ -168,7 +162,7 @@
           });
         }
 
-        statusText.textContent = `[PASS] Loaded ${fullTitle}`;
+        statusText.textContent = `[PASS] Loaded ${summary.workTitle}`;
       } catch (err) {
         statusText.textContent = `[FAIL] ${err.message}`;
         console.error(err);
