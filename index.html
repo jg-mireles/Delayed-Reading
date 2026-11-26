@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cello 1-Bar-Ahead Sight Reader</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎻</text></svg>">
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <h2>Cello 1-Bar-Ahead Trainer</h2>
+
+  <div class="controls">
+    <label>Tempo (BPM):
+      <input type="number" id="bpm" value="72" min="40" max="180" />
+    </label>
+    <label>Test Meter:
+      <select id="test-meter" style="padding: 0.35rem 0.5rem; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 1rem;">
+        <option value="4/4" selected>4/4 (4 beats)</option>
+        <option value="3/4">3/4 (3 beats)</option>
+        <option value="2/4">2/4 (2 beats)</option>
+        <option value="6/8">6/8 (2 dotted-quarter beats)</option>
+        <option value="2/2">2/2 Cut Time (2 half-note beats)</option>
+        <option value="mixed">Mixed (4/4 → 3/4 → 6/8)</option>
+      </select>
+    </label>
+    <label>Test Bars:
+      <input type="number" id="test-bars" value="6" min="2" max="64" />
+    </label>
+    <button id="start-btn">Start</button>
+    <button id="stop-btn" class="stop" disabled>Stop</button>
+  </div>
+
+  <div class="status" id="status-text">Stage 1 Ready — Pick any time signature and press Start.</div>
+
+  <div class="beat-bar" id="beat-bar"></div>
+
+  <div id="notation-card">
+    <div class="placeholder-bar" id="display-bar">Bar 1 (Ready to Read)</div>
+    <div class="placeholder-sub" id="display-sub">Beat dots and bar duration automatically adapt to each measure's meter.</div>
+  </div>
+
+  <script type="module">
+    import { SightReadClock } from "./js/clock.js";
+
+    const startBtn = document.getElementById("start-btn");
+    const stopBtn = document.getElementById("stop-btn");
+    const bpmInput = document.getElementById("bpm");
+    const meterSelect = document.getElementById("test-meter");
+    const barsInput = document.getElementById("test-bars");
+    const statusText = document.getElementById("status-text");
+    const beatBar = document.getElementById("beat-bar");
+    const displayBar = document.getElementById("display-bar");
+    const displaySub = document.getElementById("display-sub");
+
+    function renderBeatDots(count, activeBeat = -1) {
+      beatBar.innerHTML = "";
+      for (let i = 0; i < count; i++) {
+        const dot = document.createElement("div");
+        dot.className = "beat-dot" + (i === activeBeat ? " active" : "");
+        beatBar.appendChild(dot);
+      }
+    }
+
+    function buildTestMeters(selection, totalBars) {
+      const meters = [];
+      for (let i = 0; i < totalBars; i++) {
+        if (selection === "mixed") {
+          const cycle = [
+            { beats: 4, beatType: 4 },
+            { beats: 3, beatType: 4 },
+            { beats: 6, beatType: 8 }
+          ];
+          meters.push(cycle[i % cycle.length]);
+        } else {
+          const [beats, beatType] = selection.split("/").map(Number);
+          meters.push({ beats, beatType });
+        }
+      }
+      return meters;
+    }
+
+    renderBeatDots(4);
+
+    const clock = new SightReadClock({
+      onMeasureStart(playIndex, readIndex, meterInfo) {
+        const totalBars = parseInt(barsInput.value, 10) || 6;
+        const meterLabel = `${meterInfo.beats}/${meterInfo.beatType}`;
+
+        if (playIndex === -1) {
+          statusText.textContent = `COUNT-IN [${meterLabel}] — Read Bar 1 now!`;
+          displayBar.textContent = "Reading: Bar 1";
+          displaySub.textContent = `Count-in: ${meterInfo.feltBeats} beats (${meterLabel})`;
+        } else if (readIndex < totalBars) {
+          statusText.textContent = `Playing Bar ${playIndex + 1} [${meterLabel}] | Reading Bar ${readIndex + 1}`;
+          displayBar.textContent = `Reading: Bar ${readIndex + 1}`;
+          displaySub.textContent = `Audio playing Bar ${playIndex + 1} (${meterInfo.feltBeats} felt beats in ${meterLabel})`;
+        } else {
+          statusText.textContent = `Playing Final Bar (${playIndex + 1}) [${meterLabel}] | End of Piece`;
+          displayBar.textContent = "End of Piece";
+          displaySub.textContent = `Audio finishing Bar ${playIndex + 1}`;
+        }
+      },
+
+      onBeat(beatInBar, playIndex, readIndex, meterInfo) {
+        renderBeatDots(meterInfo.feltBeats, beatInBar);
+      },
+
+      onFinish() {
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        renderBeatDots(4, -1);
+        statusText.textContent = "Finished! Press Start to run again.";
+        displayBar.textContent = "Bar 1 (Ready to Read)";
+        displaySub.textContent = "Stage 1 multi-meter clock completed cleanly.";
+      }
+    });
+
+    startBtn.addEventListener("click", () => {
+      const bpm = parseInt(bpmInput.value, 10) || 72;
+      const totalBars = parseInt(barsInput.value, 10) || 6;
+      const measureMeters = buildTestMeters(meterSelect.value, totalBars);
+
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      clock.start({ bpm, measureMeters });
+    });
+
+    stopBtn.addEventListener("click", () => {
+      clock.stop();
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      renderBeatDots(4, -1);
+      statusText.textContent = "Stopped.";
+      displayBar.textContent = "Bar 1 (Ready to Read)";
+      displaySub.textContent = "Clock reset.";
+    });
+  </script>
+</body>
+</html>
