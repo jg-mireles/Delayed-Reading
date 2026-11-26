@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stage 3 Test — Bach Chorales Repository Loader</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎻</text></svg>">
+  <link rel="stylesheet" href="css/style.css" />
+  <style>
+    .report-box {
+      width: 100%;
+      max-width: 720px;
+      background: #1e1e24;
+      color: #e4e4e7;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.88rem;
+      padding: 1.25rem;
+      border-radius: 10px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+    .pass { color: #4ade80; font-weight: bold; }
+    .fail { color: #f87171; font-weight: bold; }
+  </style>
+</head>
+<body>
+
+  <h2>Stage 3: Bach Chorales Repository Test</h2>
+
+  <div class="controls">
+    <label>Select Chorale:
+      <select id="chorale-select" disabled>
+        <option>Loading catalog from GitHub...</option>
+      </select>
+    </label>
+    <button id="load-btn" disabled>Download & Verify</button>
+    <button id="random-btn" disabled>Pick Random</button>
+  </div>
+
+  <div class="status" id="status-text">Connecting to GitHub repository index...</div>
+
+  <div class="report-box" id="report-box">Waiting for catalog...</div>
+
+  <script type="module">
+    import { fetchBachChoraleList, fetchAndInspectScore } from "./js/repo-loader.js";
+
+    const selectEl = document.getElementById("chorale-select");
+    const loadBtn = document.getElementById("load-btn");
+    const randomBtn = document.getElementById("random-btn");
+    const statusText = document.getElementById("status-text");
+    const reportBox = document.getElementById("report-box");
+
+    let catalogItems = [];
+
+    async function init() {
+      const { source, items } = await fetchBachChoraleList();
+      catalogItems = items;
+
+      selectEl.innerHTML = "";
+      items.forEach((item, idx) => {
+        const opt = document.createElement("option");
+        opt.value = idx;
+        opt.textContent = item.title;
+        selectEl.appendChild(opt);
+      });
+
+      selectEl.disabled = false;
+      loadBtn.disabled = false;
+      randomBtn.disabled = false;
+      statusText.textContent = `Loaded ${items.length} Bach chorales via ${source}.`;
+
+      // Automatically test the first chorale on load
+      await testSelectedChorale();
+    }
+
+    async function testSelectedChorale() {
+      const idx = parseInt(selectEl.value, 10) || 0;
+      const item = catalogItems[idx];
+      if (!item) return;
+
+      loadBtn.disabled = true;
+      randomBtn.disabled = true;
+      statusText.textContent = `Downloading & unzipping ${item.name}...`;
+      reportBox.textContent = `Fetching ${item.url} ...`;
+
+      try {
+        const { xmlString, summary } = await fetchAndInspectScore(item.url);
+        statusText.textContent = `[PASS] Verified ${item.name} (${summary.measureCount} bars)`;
+
+        reportBox.innerHTML =
+`<span class="pass">[PASS] Repository Fetch & .mxl Unzip Successful</span>
+------------------------------------------------------------
+File:           ${item.name}
+XML Size:       ${(xmlString.length / 1024).toFixed(1)} KB
+Work Title:     ${summary.workTitle}
+Voices (${summary.partCount}):     ${summary.partNames.join(", ")}
+Total Bars:     ${summary.measureCount}
+Time Signature: ${summary.meters.join(" -> ")}
+
+Bass / Cello Voice Preview (First 4 Bars):
+  ${summary.previewBars.join("\n  ")}`;
+      } catch (err) {
+        statusText.textContent = `[FAIL] Error loading ${item.name}`;
+        reportBox.innerHTML = `<span class="fail">[FAIL] ${err.message}</span>`;
+        console.error(err);
+      } finally {
+        loadBtn.disabled = false;
+        randomBtn.disabled = false;
+      }
+    }
+
+    loadBtn.addEventListener("click", testSelectedChorale);
+    randomBtn.addEventListener("click", () => {
+      if (!catalogItems.length) return;
+      selectEl.selectedIndex = Math.floor(Math.random() * catalogItems.length);
+      testSelectedChorale();
+    });
+
+    init();
+  </script>
+</body>
+</html>
