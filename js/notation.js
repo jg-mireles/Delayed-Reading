@@ -2,7 +2,7 @@
    MODULE 4: js/notation.js
    Parses MusicXML into structured per-measure data (actual beat lengths,
    meters, ensemble audio notes, and cello visual notes) and renders crisp
-   single-bar SVGs via VexFlow.
+   single-bar OR continuous multi-bar SVGs via VexFlow.
    ========================================================================== */
 
 const VEXFLOW_CDN = "https://cdn.jsdelivr.net/npm/vexflow@4.2.3/build/cjs/vexflow.js";
@@ -246,6 +246,32 @@ export function parseMusicXMLScore(xmlString, targetPartIndex = null) {
   return measures;
 }
 
+function buildStaveNotes(VF, measure) {
+  const staveNotes = [];
+  if (!measure.visualNotes) return staveNotes;
+
+  measure.visualNotes.forEach(n => {
+    if (n.isChord && staveNotes.length > 0) {
+      const prev = staveNotes[staveNotes.length - 1];
+      prev.keys.push(n.vexKey);
+      if (n.accidental) {
+        prev.addModifier(new VF.Accidental(n.accidental), prev.keys.length - 1);
+      }
+    } else {
+      const sn = new VF.StaveNote({
+        clef: measure.clef,
+        keys: [n.vexKey],
+        duration: n.vexDuration
+      });
+      if (n.accidental && !n.isRest) {
+        sn.addModifier(new VF.Accidental(n.accidental), 0);
+      }
+      staveNotes.push(sn);
+    }
+  });
+  return staveNotes;
+}
+
 export async function renderMeasureToContainer(measure, containerEl, options = {}) {
   const VF = await loadVexFlow();
   const { showTimeSignature = false, width = 560, height = 170 } = options;
@@ -266,30 +292,8 @@ export async function renderMeasureToContainer(measure, containerEl, options = {
   }
   stave.setContext(context).draw();
 
-  if (!measure.visualNotes || measure.visualNotes.length === 0) {
-    return;
-  }
-
-  const staveNotes = [];
-  measure.visualNotes.forEach(n => {
-    if (n.isChord && staveNotes.length > 0) {
-      const prev = staveNotes[staveNotes.length - 1];
-      prev.keys.push(n.vexKey);
-      if (n.accidental) {
-        prev.addModifier(new VF.Accidental(n.accidental), prev.keys.length - 1);
-      }
-    } else {
-      const sn = new VF.StaveNote({
-        clef: measure.clef,
-        keys: [n.vexKey],
-        duration: n.vexDuration
-      });
-      if (n.accidental && !n.isRest) {
-        sn.addModifier(new VF.Accidental(n.accidental), 0);
-      }
-      staveNotes.push(sn);
-    }
-  });
+  const staveNotes = buildStaveNotes(VF, measure);
+  if (staveNotes.length === 0) return;
 
   const beams = VF.Beam.generateBeams(staveNotes);
   const voice = new VF.Voice({
@@ -305,4 +309,96 @@ export async function renderMeasureToContainer(measure, containerEl, options = {
 
   voice.draw(context, stave);
   beams.forEach(b => b.setContext(context).draw());
+}
+
+export async function renderContinuousMeasures(measuresSlice, containerEl, options = {}) {
+  const VF = await loadVexFlow();
+  const {
+    showFirstTimeSignature = false,
+    highlightFirstBar = false,
+    width = 860,
+    height = 185
+  } = options;
+
+  containerEl.innerHTML = "";
+  if (!measuresSlice || measuresSlice.length === 0) return;
+
+  const renderer = new VF.Renderer(containerEl, VF.Renderer.Backends.SVG);
+  renderer.resize(width, height);
+  const context = renderer.getContext();
+
+  const leftPad = 15;
+  const usableWidth = width - 30;
+  const bar1Width = measuresSlice.length === 2 ? Math.round(usableWidth * 0.54) : usableWidth;
+  const bar2Width = usableWidth - bar1Width;
+
+  if (highlightFirstBar) {
+    context.save();
+    context.setFillStyle("rgba(43, 89, 195, 0.08)");
+    context.fillRect(leftPad, 22, bar1Width, 125);
+    context.restore();
+  }
+
+  const m1 = measuresSlice[0];
+  const stave1 = new VF.Stave(leftPad, 28, bar1Width);
+  stave1.addClef(m1.clef);
+  if (m1.keySignature && m1.keySignature !== "C") {
+    stave1.addKeySignature(m1.keySignature);
+  }
+  if (showFirstTimeSignature) {
+    stave1.addTimeSignature(`${m1.meter.beats}/${m1.meter.beatType}`);
+  }
+  stave1.setContext(context).draw();
+
+  const notes1 = buildStaveNotes(VF, m1);
+  if (notes1.length > 0) {
+    const beams1 = VF.Beam.generateBeams(notes1);
+    const voice1 = new VF.Voice({
+      num_beats: m1.meter.beats,
+      beat_value: m1.meter.beatType
+    }).setStrict(false);
+    voice1.addTickables(notes1);
+
+    const headerReserve = 95 + (m1.keySignature !== "C" ? 30 : 0) + (showFirstTimeSignature ? 25 : 0);
+    new VF.Formatter()
+      .joinVoices([voice1])
+      .format([voice1], Math.max(120, bar1Width - headerReserve));
+
+    voice1.draw(context, stave1);
+    beams1.forEach(b => b.setContext(context).draw());
+  }
+
+  if (measuresSlice.length === 2) {
+    const m2 = measuresSlice[1];
+    const stave2 = new VF.Stave(leftPad + bar1Width, 28, bar2Width);
+
+    const meterChanged =
+      m2.meter.beats !== m1.meter.beats ||
+      m2.meter.beatType !== m1.meter.beatType;
+    const keyChanged = m2.keySignature !== m1.keySignature;
+    const clefChanged = m2.clef !== m1.clef;
+
+    if (clefChanged) stave2.addClef(m2.clef);
+    if (keyChanged && m2.keySignature !== "C") stave2.addKeySignature(m2.keySignature);
+    if (meterChanged) stave2.addTimeSignature(`${m2.meter.beats}/${m2.meter.beatType}`);
+
+    stave2.setContext(context).draw();
+
+    const notes2 = buildStaveNotes(VF, m2);
+    if (notes2.length > 0) {
+      const beams2 = VF.Beam.generateBeams(notes2);
+      const voice2 = new VF.Voice({
+        num_beats: m2.meter.beats,
+        beat_value: m2.meter.beatType
+      }).setStrict(false);
+      voice2.addTickables(notes2);
+
+      new VF.Formatter()
+        .joinVoices([voice2])
+        .format([voice2], Math.max(120, bar2Width - 45));
+
+      voice2.draw(context, stave2);
+      beams2.forEach(b => b.setContext(context).draw());
+    }
+  }
 }
