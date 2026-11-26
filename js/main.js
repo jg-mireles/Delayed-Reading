@@ -2,6 +2,8 @@
    MODULE 5: js/main.js
    Connects clock.js, audio.js, repo-loader.js, and notation.js into the
    1-bar-ahead Cello Sight-Reading Trainer.
+   - Ensures opening pickup bars get a full-measure count-in and full-bar
+     reading window (aligning pickup notes to the end of the bar).
    ========================================================================== */
 
 import { SightReadClock } from "./clock.js";
@@ -38,21 +40,51 @@ function renderBeatDots(count, activeBeat = -1) {
 }
 
 /**
- * Builds per-measure meter objects for SightReadClock, accounting for
- * pickup bars and mid-bar fermata splits via actualQuarterBeats.
+ * Builds per-measure meter objects for SightReadClock.
+ * If the opening bar (index 0) is a short pickup bar, expands it to a full
+ * measure (e.g., 4 beats in 4/4) so both the count-in and pickup bar give
+ * you a full measure to read ahead.
  */
 function buildClockMeters(measures) {
-  return measures.map(m => {
+  return measures.map((m, idx) => {
     const quarterUnit = 4 / m.meter.beatType;
-    const actualBeatsInDenominator = Math.max(
+    const actualBeats = Math.max(
       1,
       Math.round(m.actualQuarterBeats / quarterUnit)
     );
+
+    if (idx === 0 && actualBeats < m.meter.beats) {
+      return {
+        beats: m.meter.beats,
+        beatType: m.meter.beatType
+      };
+    }
+
     return {
-      beats: actualBeatsInDenominator,
+      beats: actualBeats,
       beatType: m.meter.beatType
     };
   });
+}
+
+/**
+ * If Bar 0 is a pickup bar (e.g., 1 beat in a 4/4 bar), shifts its notes to
+ * the end of the full bar (beatOffset + 3) so clicks 1-2-3 lead cleanly into
+ * the pickup note on beat 4 and Bar 2 lands right on Beat 1.
+ */
+function getAdjustedAudioNotes(measure, barIndex) {
+  if (barIndex !== 0) return measure.audioNotes;
+
+  const quarterUnit = 4 / measure.meter.beatType;
+  const actualBeats = Math.max(1, Math.round(measure.actualQuarterBeats / quarterUnit));
+  const missingLeadingBeats = Math.max(0, measure.meter.beats - actualBeats);
+
+  if (missingLeadingBeats === 0) return measure.audioNotes;
+
+  return measure.audioNotes.map(n => ({
+    ...n,
+    beatOffset: n.beatOffset + missingLeadingBeats
+  }));
 }
 
 async function displayBar(barIndex) {
@@ -87,11 +119,13 @@ const clock = new SightReadClock({
     // 2. Schedule audio for Bar N (playIndex)
     if (playIndex === -1) {
       const m1 = loadedMeasures[0];
-      statusText.textContent = `COUNT-IN (${meterInfo.feltBeats} beat${meterInfo.feltBeats > 1 ? "s" : ""}) — Read Bar ${m1.numberLabel} now!`;
+      statusText.textContent = `COUNT-IN (${meterInfo.feltBeats} beats) — Read Bar ${m1.numberLabel} now!`;
     } else if (playIndex < totalBars) {
       const playingMeasure = loadedMeasures[playIndex];
+      const notesToPlay = getAdjustedAudioNotes(playingMeasure, playIndex);
+
       audio.scheduleBar(
-        playingMeasure.audioNotes,
+        notesToPlay,
         beatDurationSec,
         muteCelloCheckbox.checked
       );
@@ -117,7 +151,7 @@ const clock = new SightReadClock({
     stopBtn.disabled = true;
     choraleSelect.disabled = false;
     randomBtn.disabled = false;
-    renderBeatDots(4, -1);
+    renderBeatDots(loadedMeasures[0]?.meter.beats || 4, -1);
     statusText.textContent = `Finished "${loadedSummary?.workTitle || "Chorale"}"! Press Start to repeat.`;
     displayBar(0);
   }
@@ -139,7 +173,6 @@ async function loadSelectedChorale() {
     loadedMeasures = parseMusicXMLScore(xmlString);
     loadedSummary = summary;
 
-    // Update UI headers and dropdown text with full German title
     pieceTitleEl.textContent = summary.workTitle;
     pieceMetaEl.textContent = `Key: ${loadedMeasures[0]?.keySignature || "C"} • ${loadedMeasures.length} bars • ${summary.meters.join(", ")}`;
     choraleSelect.options[idx].textContent = summary.workTitle;
@@ -147,7 +180,7 @@ async function loadSelectedChorale() {
     renderBeatDots(loadedMeasures[0]?.meter.beats || 4, -1);
     await displayBar(0);
 
-    statusText.textContent = `Ready — Press Start for count-in (Bar ${loadedMeasures[0]?.numberLabel || 1} shown below).`;
+    statusText.textContent = `Ready — Press Start for full ${loadedMeasures[0]?.meter.beats || 4}-beat count-in.`;
     startBtn.disabled = false;
   } catch (err) {
     statusText.textContent = `Error loading chorale: ${err.message}`;
@@ -196,7 +229,6 @@ randomBtn.addEventListener("click", () => {
 startBtn.addEventListener("click", startPractice);
 stopBtn.addEventListener("click", stopPractice);
 
-// Bootstrap catalog on load
 (async function init() {
   renderBeatDots(4);
   const { items } = await fetchBachChoraleList();
