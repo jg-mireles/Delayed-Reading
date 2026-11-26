@@ -276,4 +276,142 @@ function buildStaveNotes(VF, measure) {
  * Renders a single measure object cleanly into a DOM container using VexFlow.
  */
 export async function renderMeasureToContainer(measure, containerEl, options = {}) {
-  const VF = await loadV
+  const VF = await loadVexFlow();
+  const { showTimeSignature = false, width = 560, height = 170 } = options;
+
+  containerEl.innerHTML = "";
+
+  const renderer = new VF.Renderer(containerEl, VF.Renderer.Backends.SVG);
+  renderer.resize(width, height);
+  const context = renderer.getContext();
+
+  const stave = new VF.Stave(15, 25, width - 30);
+  stave.addClef(measure.clef);
+  if (measure.keySignature && measure.keySignature !== "C") {
+    stave.addKeySignature(measure.keySignature);
+  }
+  if (showTimeSignature) {
+    stave.addTimeSignature(`${measure.meter.beats}/${measure.meter.beatType}`);
+  }
+  stave.setContext(context).draw();
+
+  const staveNotes = buildStaveNotes(VF, measure);
+  if (staveNotes.length === 0) return;
+
+  const beams = VF.Beam.generateBeams(staveNotes);
+  const voice = new VF.Voice({
+    num_beats: measure.meter.beats,
+    beat_value: measure.meter.beatType
+  }).setStrict(false);
+
+  voice.addTickables(staveNotes);
+
+  new VF.Formatter()
+    .joinVoices([voice])
+    .format([voice], width - 140);
+
+  voice.draw(context, stave);
+  beams.forEach(b => b.setContext(context).draw());
+}
+
+/**
+ * Renders an array of 1 or 2 measures side-by-side on ONE continuous staff
+ * separated by a normal barline (with clef/key/time only on the left edge,
+ * unless a meter/key change occurs on the second bar).
+ */
+export async function renderContinuousMeasures(measuresSlice, containerEl, options = {}) {
+  const VF = await loadVexFlow();
+  const {
+    showFirstTimeSignature = false,
+    highlightFirstBar = false,
+    width = 860,
+    height = 185
+  } = options;
+
+  containerEl.innerHTML = "";
+  if (!measuresSlice || measuresSlice.length === 0) return;
+
+  const renderer = new VF.Renderer(containerEl, VF.Renderer.Backends.SVG);
+  renderer.resize(width, height);
+  const context = renderer.getContext();
+
+  const leftPad = 15;
+  const usableWidth = width - 30;
+  // Give the first bar slightly more width so clef + key signature have comfortable room
+  const bar1Width = measuresSlice.length === 2 ? Math.round(usableWidth * 0.54) : usableWidth;
+  const bar2Width = usableWidth - bar1Width;
+
+  // Optional soft highlight behind the currently playing first measure
+  if (highlightFirstBar) {
+    context.save();
+    context.setFillStyle("rgba(43, 89, 195, 0.08)");
+    context.fillRect(leftPad, 22, bar1Width, 125);
+    context.restore();
+  }
+
+  // --- Measure 1 (Left half of continuous staff) ---
+  const m1 = measuresSlice[0];
+  const stave1 = new VF.Stave(leftPad, 28, bar1Width);
+  stave1.addClef(m1.clef);
+  if (m1.keySignature && m1.keySignature !== "C") {
+    stave1.addKeySignature(m1.keySignature);
+  }
+  if (showFirstTimeSignature) {
+    stave1.addTimeSignature(`${m1.meter.beats}/${m1.meter.beatType}`);
+  }
+  stave1.setContext(context).draw();
+
+  const notes1 = buildStaveNotes(VF, m1);
+  if (notes1.length > 0) {
+    const beams1 = VF.Beam.generateBeams(notes1);
+    const voice1 = new VF.Voice({
+      num_beats: m1.meter.beats,
+      beat_value: m1.meter.beatType
+    }).setStrict(false);
+    voice1.addTickables(notes1);
+
+    // Leave extra horizontal room on stave1 for clef + key signature
+    const headerReserve = 95 + (m1.keySignature !== "C" ? 30 : 0) + (showFirstTimeSignature ? 25 : 0);
+    new VF.Formatter()
+      .joinVoices([voice1])
+      .format([voice1], Math.max(120, bar1Width - headerReserve));
+
+    voice1.draw(context, stave1);
+    beams1.forEach(b => b.setContext(context).draw());
+  }
+
+  // --- Measure 2 (Right half of continuous staff, seamlessly connected) ---
+  if (measuresSlice.length === 2) {
+    const m2 = measuresSlice[1];
+    const stave2 = new VF.Stave(leftPad + bar1Width, 28, bar2Width);
+
+    const meterChanged =
+      m2.meter.beats !== m1.meter.beats ||
+      m2.meter.beatType !== m1.meter.beatType;
+    const keyChanged = m2.keySignature !== m1.keySignature;
+    const clefChanged = m2.clef !== m1.clef;
+
+    if (clefChanged) stave2.addClef(m2.clef);
+    if (keyChanged && m2.keySignature !== "C") stave2.addKeySignature(m2.keySignature);
+    if (meterChanged) stave2.addTimeSignature(`${m2.meter.beats}/${m2.meter.beatType}`);
+
+    stave2.setContext(context).draw();
+
+    const notes2 = buildStaveNotes(VF, m2);
+    if (notes2.length > 0) {
+      const beams2 = VF.Beam.generateBeams(notes2);
+      const voice2 = new VF.Voice({
+        num_beats: m2.meter.beats,
+        beat_value: m2.meter.beatType
+      }).setStrict(false);
+      voice2.addTickables(notes2);
+
+      new VF.Formatter()
+        .joinVoices([voice2])
+        .format([voice2], Math.max(120, bar2Width - 45));
+
+      voice2.draw(context, stave2);
+      beams2.forEach(b => b.setContext(context).draw());
+    }
+  }
+}
